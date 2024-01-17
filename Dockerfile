@@ -1,9 +1,11 @@
-FROM golang:1.15
-WORKDIR /mnt/homework
+FROM golang:1.21.1-alpine as builder
+WORKDIR /mnt/spacelift-coding-challenge
+COPY go.mod .
+RUN go mod download
 COPY . .
-RUN go build
+RUN go build -o bin/gateway cmd/gateway/main.go
 
-# Docker is used as a base image so you can easily start playing around in the container using the Docker command line client.
-FROM docker
-COPY --from=0 /mnt/homework/homework-object-storage /usr/local/bin/homework-object-storage
-RUN apk add bash curl
+FROM scratch
+COPY --from=builder /mnt/spacelift-coding-challenge/bin/gateway /usr/local/bin/gateway
+EXPOSE 3000
+ENTRYPOINT ["/usr/local/bin/gateway"]

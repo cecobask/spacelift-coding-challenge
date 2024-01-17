@@ -1,0 +1,64 @@
+version: "3.7"
+
+services:
+  object-storage-1: &object-storage
+    image: minio/minio
+    command: server --console-address ":9001" /tmp/data
+    ports: [ "9001:9001" ]
+    networks:
+      spacelift:
+        ipv4_address: 169.253.0.2
+    environment:
+      - MINIO_ROOT_USER=ring
+      - MINIO_ROOT_PASSWORD=treepotato
+    labels:
+      - "minio.storage.node=true"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  object-storage-2:
+    <<: *object-storage
+    ports: [ "9002:9001" ]
+    networks:
+      spacelift:
+        ipv4_address: 169.253.0.3
+    environment:
+      - MINIO_ROOT_USER=maglev
+      - MINIO_ROOT_PASSWORD=baconpapaya
+
+  object-storage-3:
+    <<: *object-storage
+    ports: [ "9003:9001" ]
+    networks:
+      spacelift:
+        ipv4_address: 169.253.0.4
+    environment:
+      - MINIO_ROOT_USER=rendezvous
+      - MINIO_ROOT_PASSWORD=bluegreen
+
+  gateway:
+    build: .
+    ports: [ "3000:3000" ]
+    networks:
+      spacelift:
+        ipv4_address: 169.253.0.5
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      object-storage-1:
+        condition: service_healthy
+      object-storage-2:
+        condition: service_healthy
+      object-storage-3:
+        condition: service_healthy
+
+networks:
+  spacelift:
+    ipam:
+      driver: default
+      config:
+        - subnet: 169.253.0.0/24
+          gateway: 169.253.0.1

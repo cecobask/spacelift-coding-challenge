@@ -12,25 +12,22 @@ import (
 )
 
 type Docker struct {
-	ctx    context.Context
 	client *client.Client
-	logger *log.Logger
 }
 
-func NewDocker(ctx context.Context, logger *log.Logger) (*Docker, error) {
+func NewDocker() (*Docker, error) {
 	dockerClient, err := client.NewClientWithOpts()
 	if err != nil {
 		return nil, err
 	}
 	return &Docker{
-		ctx:    ctx,
 		client: dockerClient,
-		logger: logger,
 	}, nil
 }
 
-func (d *Docker) GetNetworkWithName(name string) (*types.NetworkResource, error) {
-	networks, err := d.client.NetworkList(d.ctx, types.NetworkListOptions{
+func (d *Docker) GetNetworkWithName(ctx context.Context, name string) (*types.NetworkResource, error) {
+	log.FromContext(ctx).Debug("getting network", "name", name)
+	networks, err := d.client.NetworkList(ctx, types.NetworkListOptions{
 		Filters: filters.NewArgs(
 			filters.Arg("name", name),
 		),
@@ -44,8 +41,9 @@ func (d *Docker) GetNetworkWithName(name string) (*types.NetworkResource, error)
 	return &networks[0], nil
 }
 
-func (d *Docker) GetContainersWithLabel(label string) ([]types.ContainerJSON, error) {
-	containerList, err := d.client.ContainerList(d.ctx, types.ContainerListOptions{
+func (d *Docker) GetContainersWithLabel(ctx context.Context, label string) ([]types.ContainerJSON, error) {
+	log.FromContext(ctx).Debug("getting containers", "label", label)
+	containerList, err := d.client.ContainerList(ctx, types.ContainerListOptions{
 		Filters: filters.NewArgs(
 			filters.Arg("label", label),
 		),
@@ -58,7 +56,7 @@ func (d *Docker) GetContainersWithLabel(label string) ([]types.ContainerJSON, er
 	}
 	var containers []types.ContainerJSON
 	for i := range containerList {
-		c, err := d.client.ContainerInspect(d.ctx, containerList[i].ID)
+		c, err := d.client.ContainerInspect(ctx, containerList[i].ID)
 		if err != nil {
 			return nil, fmt.Errorf("could not inspect container %s: %w", c.ID, err)
 		}

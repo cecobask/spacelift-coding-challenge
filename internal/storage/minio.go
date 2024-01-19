@@ -21,47 +21,34 @@ const (
 	nodeLabel            = "minio.storage.node=true"
 )
 
-var (
-	ErrObjectNotFound = errors.New("object not found")
-)
+var ErrObjectNotFound = errors.New("object not found")
 
-type Node struct {
+type node struct {
 	id     string
 	client *minio.Client
 }
 
 type Minio struct {
-	ctx    context.Context
 	docker *container.Docker
-	logger *log.Logger
-	nodes  map[string]Node
+	nodes  map[string]node
 	ring   *consistent.Consistent
 }
 
-func NewMinio(ctx context.Context, logger *log.Logger) (*Minio, error) {
-	docker, err := container.NewDocker(ctx, logger)
-	if err != nil {
-		return nil, fmt.Errorf("could not create docker client: %w", err)
-	}
-	m := &Minio{
-		ctx:    ctx,
+func NewMinio(docker *container.Docker) *Minio {
+	return &Minio{
 		docker: docker,
-		logger: logger,
-		nodes:  make(map[string]Node),
+		nodes:  make(map[string]node),
 		ring:   consistent.New(),
 	}
-	if err = m.setup(); err != nil {
-		return nil, fmt.Errorf("could not setup minio: %w", err)
-	}
-	return m, nil
 }
 
-func (m *Minio) setup() error {
-	containers, err := m.docker.GetContainersWithLabel(nodeLabel)
+func (m *Minio) Setup(ctx context.Context) error {
+	log.FromContext(ctx).Debug("setting up minio")
+	containers, err := m.docker.GetContainersWithLabel(ctx, nodeLabel)
 	if err != nil {
 		return err
 	}
-	network, err := m.docker.GetNetworkWithName(networkName)
+	network, err := m.docker.GetNetworkWithName(ctx, networkName)
 	if err != nil {
 		return err
 	}
@@ -78,11 +65,11 @@ func (m *Minio) setup() error {
 		if err != nil {
 			return err
 		}
-		n := Node{
+		n := node{
 			id:     c.ID[:12],
 			client: client,
 		}
-		if err = n.setupDefaultBucket(m.ctx); err != nil {
+		if err = n.setupDefaultBucket(ctx); err != nil {
 			return err
 		}
 		m.nodes[n.id] = n
@@ -91,7 +78,54 @@ func (m *Minio) setup() error {
 	return nil
 }
 
-func (n *Node) setupDefaultBucket(ctx context.Context) error {
+func (m *Minio) GetObject(ctx context.Context, id string) ([]byte, *minio.ObjectInfo, error) {
+	log.FromContext(ctx).Debug("getting object", "id", id)
+	n, err := m.findNodeForObject(ctx, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	object, stat, err := n.getObject(ctx, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer object.Close()
+	data, err := io.ReadAll(object)
+	if err != nil {
+		return nil, nil, fmt.Errorf("could not read object: %w", err)
+	}
+	log.FromContext(ctx).Debug("object was retrieved", "id", stat.Key)
+	return data, stat, nil
+}
+
+func (m *Minio) PutObject(ctx context.Context, id string, data []byte, contentType string) error {
+	log.FromContext(ctx).Debug("putting object", "id", id, "contentType", contentType)
+	n, err := m.findNodeForObject(ctx, id)
+	if err != nil {
+		return err
+	}
+	info, err := n.putObject(ctx, id, data, contentType)
+	if err != nil {
+		return err
+	}
+	log.FromContext(ctx).Debug("object was uploaded", "id", info.Key, "bucket", info.Bucket)
+	return nil
+}
+
+func (m *Minio) findNodeForObject(ctx context.Context, id string) (*node, error) {
+	log.FromContext(ctx).Debug("finding node for object", "object.id", id)
+	nodeID, err := m.ring.Get(id)
+	if err != nil {
+		return nil, fmt.Errorf("could not find any nodes in the ring: %w", err)
+	}
+	n, ok := m.nodes[nodeID]
+	if !ok {
+		return nil, fmt.Errorf("could not find node with id %s", nodeID)
+	}
+	return &n, nil
+}
+
+func (n *node) setupDefaultBucket(ctx context.Context) error {
+	log.FromContext(ctx).Debug("setting up default bucket", "node.id", n.id)
 	exists, err := n.client.BucketExists(ctx, n.id)
 	if err != nil {
 		return err
@@ -102,46 +136,7 @@ func (n *Node) setupDefaultBucket(ctx context.Context) error {
 	return n.client.MakeBucket(ctx, n.id, minio.MakeBucketOptions{})
 }
 
-func (m *Minio) GetObject(id string) ([]byte, *minio.ObjectInfo, error) {
-	nodeID, err := m.ring.Get(id)
-	if err != nil {
-		return nil, nil, fmt.Errorf("could not find any nodes in the ring: %w", err)
-	}
-	node, ok := m.nodes[nodeID]
-	if !ok {
-		return nil, nil, fmt.Errorf("could not find node with id %s", nodeID)
-	}
-	object, stat, err := node.GetObject(m.ctx, id)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer object.Close()
-	data, err := io.ReadAll(object)
-	if err != nil {
-		return nil, nil, fmt.Errorf("could not read object: %w", err)
-	}
-	m.logger.Info("object was retrieved", "id", id, "stat", stat)
-	return data, stat, nil
-}
-
-func (m *Minio) PutObject(id string, data []byte, contentType string) error {
-	nodeID, err := m.ring.Get(id)
-	if err != nil {
-		return fmt.Errorf("could not find any nodes in the ring: %w", err)
-	}
-	node, ok := m.nodes[nodeID]
-	if !ok {
-		return fmt.Errorf("could not find node with id %s", nodeID)
-	}
-	info, err := node.PutObject(m.ctx, id, data, contentType)
-	if err != nil {
-		return err
-	}
-	m.logger.Info("object was uploaded", "id", id, "info", info)
-	return nil
-}
-
-func (n *Node) GetObject(ctx context.Context, name string) (*minio.Object, *minio.ObjectInfo, error) {
+func (n *node) getObject(ctx context.Context, name string) (*minio.Object, *minio.ObjectInfo, error) {
 	object, err := n.client.GetObject(ctx, n.id, name, minio.GetObjectOptions{})
 	if err != nil {
 		return nil, nil, err
@@ -157,7 +152,7 @@ func (n *Node) GetObject(ctx context.Context, name string) (*minio.Object, *mini
 	return object, &stat, nil
 }
 
-func (n *Node) PutObject(ctx context.Context, id string, data []byte, contentType string) (*minio.UploadInfo, error) {
+func (n *node) putObject(ctx context.Context, id string, data []byte, contentType string) (*minio.UploadInfo, error) {
 	info, err := n.client.PutObject(ctx, n.id, id, bytes.NewReader(data), int64(len(data)), minio.PutObjectOptions{
 		ContentType: contentType,
 	})

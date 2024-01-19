@@ -1,36 +1,30 @@
 package gateway
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"github.com/cecobask/spacelift-coding-challenge/internal/storage"
-	"github.com/cecobask/spacelift-coding-challenge/pkg/log"
 	"github.com/go-chi/chi/v5"
 	"io"
 	"mime"
 	"net/http"
 )
 
-const formFileKey = "file"
-
 type Handler struct {
-	ctx    context.Context
-	logger *log.Logger
-	minio  *storage.Minio
+	minio *storage.Minio
 }
 
-func NewHandler(ctx context.Context, logger *log.Logger, minio *storage.Minio) *Handler {
+const formFileKey = "file"
+
+func NewHandler(minio *storage.Minio) *Handler {
 	return &Handler{
-		ctx:    ctx,
-		logger: logger,
-		minio:  minio,
+		minio: minio,
 	}
 }
 
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) error {
 	id := chi.URLParam(r, "id")
-	object, stat, err := h.minio.GetObject(id)
+	object, stat, err := h.minio.GetObject(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, storage.ErrObjectNotFound) {
 			return &handlerError{
@@ -100,7 +94,7 @@ func (h *Handler) CreateOrUpdate(w http.ResponseWriter, r *http.Request) error {
 			StatusCode: http.StatusInternalServerError,
 		}
 	}
-	if err = h.minio.PutObject(id, data, http.DetectContentType(fileHeader)); err != nil {
+	if err = h.minio.PutObject(r.Context(), id, data, http.DetectContentType(fileHeader)); err != nil {
 		return &handlerError{
 			Inner:      err,
 			Message:    fmt.Sprintf("could not create or update object with id %s", id),
@@ -136,16 +130,4 @@ func (f handlerFunc) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
-}
-
-func validateObjectID(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := chi.URLParam(r, "id")
-		if len(id) > 32 {
-			message := fmt.Sprintf("object id must be between 1-32 characters long, but received invalid value: %s", id)
-			http.Error(w, message, http.StatusBadRequest)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }

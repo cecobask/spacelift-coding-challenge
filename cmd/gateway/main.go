@@ -2,20 +2,24 @@ package main
 
 import (
 	"context"
+	"github.com/cecobask/spacelift-coding-challenge/internal/container"
 	"github.com/cecobask/spacelift-coding-challenge/internal/gateway"
 	"github.com/cecobask/spacelift-coding-challenge/internal/storage"
 	"github.com/cecobask/spacelift-coding-challenge/pkg/log"
-	"net/http"
 )
 
 func main() {
-	ctx := context.Background()
 	logger := log.DefaultLogger()
-	minio, err := storage.NewMinio(ctx, logger)
+	logger.Info("starting gateway")
+	ctx := log.WithContext(context.Background(), logger)
+	docker, err := container.NewDocker()
 	logger.ExitOnError(err)
-	handler := gateway.NewHandler(ctx, logger, minio)
+	minio := storage.NewMinio(docker)
+	err = minio.Setup(ctx)
+	logger.ExitOnError(err)
+	handler := gateway.NewHandler(minio)
 	router := gateway.NewRouter(handler)
-	logger.Info("Starting server on port 3000")
-	err = http.ListenAndServe(":3000", router)
+	logger.Info("starting http server")
+	err = gateway.StartServer(ctx, router)
 	logger.ExitOnError(err)
 }
